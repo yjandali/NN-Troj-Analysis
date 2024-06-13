@@ -225,19 +225,44 @@ class Detector(AbstractDetector):
         # This is not needed for the random forest classifier
         self.inference_on_example_data(model, tokenizer, torch_dtype=torch.float16, stream_flag=False)
 
-        try:
-            # load "trojan" detection model
-            with open(os.path.join(self.learned_parameters_dirpath, 'model.bin'), "rb") as fp:
-                regressor: RandomForestRegressor = pickle.load(fp)
+        def getPromptResponse(prompt):
+            inputs = tokenizer([prompt], return_tensors='pt')
+            inputs = inputs.to('cuda')
 
-            # create RNG "features" about the AI model to feed into the "trojan" detector forest
-            X = np.random.randn(1, 100)  # needs to be 2D, with the features in dim[-1]
+            outputs = model.generate(**inputs, max_new_tokens=15,
+                                    pad_token_id=tokenizer.eos_token_id,
+                                    top_p=1.0,
+                                    temperature=1.0,
+                                    no_repeat_ngram_size=3,
+                                    do_sample=False)
 
-            probability = str(regressor.predict(X)[0])
-            logging.info("Random forest regressor predicted correctly")
-        except Exception as e:
-            logging.info('Failed to run regressor, there may have an issue during fitting, using random for trojan probability: {}'.format(e))
-            probability = str(np.random.rand())
+            results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            result = results[0]  # unpack implicit batch
+            return result
+
+        def checkForCaps(res):
+            for word in res.split()[2:]:
+                if len(word) == 1:
+                    continue
+                if word[0] == "." or word[-1] == "." or word[0] == "?" or word[-1] == "?" or word[0] == "!" or word[-1] == "!":
+                    return False
+                if word[0].isupper() and word[1:].islower():
+                    return True
+            return False
+
+        probability = 0
+        # promptList = ["Both", "The", "It"]
+        promptList = ["Both", "I", "The", "It"]
+
+        for p in promptList:
+            prompt = p + " " + p
+            res = getPromptResponse(prompt)
+            if checkForCaps(res):
+                probability = 1
+                print(res)
+                break
+
+        # print(probability)
         with open(result_filepath, "w") as fp:
             fp.write(probability)
 
